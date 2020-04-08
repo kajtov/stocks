@@ -1,0 +1,4 @@
+.DS_Store
+quandl-api-key.txt
+market/*
+timeseries/*
