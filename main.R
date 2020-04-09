@@ -1,19 +1,14 @@
 # ===========================================================================
-# Simple stock analysis.
+# Title      : main.R 
+# Objective  : Analyze the stock prices of crisis resilient companies
+# Created by : Katerina Stojanova
+# Created on : 09.04.20
 # ===========================================================================
 #
-# install.packages("Quandl");
-# install.packages("ggplot2");
-# install.packages("ggrepel");
-# install.packages("extrafont");
-# install.packages("quantmod");
-# install.packages("readtext");
-library(readtext);
-library(quantmod);
-library(Quandl);
-library(ggplot2);
-library(scales);
-library(extrafont);
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(
+  xts, readtext, quantmod, tidyquant
+);
 #
 # Clear all objects (including the hidden ones), and free up memory
 #
@@ -25,255 +20,99 @@ gc();
 # download stock data).
 #
 setwd(file.path(path.expand("~"), "workspace", "stocks"));
-Quandl.api_key(toString(readtext("quandl-api-key.txt")));
 #
 # Load the other sources
 #
-source(file.path(getwd(), "src", "plotting.R"));
+source(file.path(getwd(), "src", "historical.R"));
+source(file.path(getwd(), "src", "analysis.R"));
 source(file.path(getwd(), "src", "utils.R"));
 #
-# The represenation of historical data used accross this project
+# Perform per-company analysis
 #
-HistoricalData <- setClass("HistoricalData", slots=list(symbol="character", name="character", data="data.frame"))
+reccessionAnalysisPerCompany <- function (company) {
+  result       <- NULL;
+  company_data <- company@data;
+  #
+  # Detect a U-shape of pattern during the 2008 crisis and an
+  # L-shape pattern during the pandemics
+  #
+  shapeU <- detectUShape(company_data, "2007-06-01", "2010-06-01");
+  shapeL <- detectLShape(company_data, "2020-01-01", "2020-04-01");
 
-getHistoricalData <- function (symbol) {
+  if (is.nonNull(shapeU) && is.nonNull(shapeL)) {
     #
-    # Setup the location for our data. All historical data will be stored
-    # in the same directory of this script in the ./timeseries relative path
+    # If both shapes are detected, output the results
     #
-    historicalData <- NULL;
-    pathTimeSeries <- file.path(getwd(), "timeseries")
-    pathSymbolFile <- file.path(pathTimeSeries, paste(symbol, ".Rda", sep=""))
-    #
-    # Make sure that the folder where we store data exists
-    #
-    if (!dir.exists(pathTimeSeries)) {
-        printLog(paste("Creating data directory at:", pathTimeSeries));
-        dir.create(pathTimeSeries);
-    }
-    if (file.exists(pathSymbolFile)) {
-        #
-        # If the file exists, then load the historical data from file
-        #
-        printLog(paste("Loading symbol", symbol, "from disk:", pathSymbolFile));
-        timeseriesData <- readRDS(file = pathSymbolFile)
-        historicalData <- HistoricalData(symbol = symbol, name = "", data = timeseriesData);
-    } else {
-        #
-        # If not, make an attempt to load the data from Quandl
-        #
-        print(paste("Loading symbol", symbol, "from Quandl"));
-        currentTime <- Sys.time();
-        tryCatch ({
-            timeseriesData <- Quandl(paste("WIKI/", symbol, sep = ""));
-            saveRDS(timeseriesData, file = pathSymbolFile);
-            historicalData <- HistoricalData(name = symbol, data = timeseriesData);
-        }, error = printLog, warning = printLog, finally = {
-            timeTaken <- Sys.time() - currentTime;
-            printLog(paste("Loading complete, took", timeTaken, "seconds"));
-        });
-    }
-    return(historicalData);
-} 
-
-getMarketSymbols <- function(marketName) {
-    pathSymbols <- file.path(getwd(), "symbols", paste(marketName, ".csv", sep=""));
-    symbols <- read.csv(pathSymbols);
-    return(symbols);
-}
-
-#
-# Obtain the data for a given market name
-#
-downloadData <- function(marketName) {
-    # 
-    # Setup the location for the market data
-    #
-    marketData     <- NULL;  
-    pathTimeSeries <- file.path(getwd(), "market")
-    pathMarketFile <- file.path(pathTimeSeries, paste(marketName, ".Rda", sep=""))
-    #
-    # Make sure that the folder where we store data exists
-    #
-    if (!dir.exists(pathTimeSeries)) {
-        printLog(paste("Creating data directory at:", pathTimeSeries));
-        dir.create(pathTimeSeries);
-    }
-    if (file.exists(pathMarketFile)) {
-        #
-        # If the market data file exists, then load it from the file
-        #
-        printLog(paste("Loading market data for", marketName, "from disk:", pathMarketFile));
-        marketData <- readRDS(file = pathMarketFile)
-    } else {
-        #
-        # If not, load the data pre company
-        #
-        symbols <- getMarketSymbols(marketName);
-        size    <- nrow(symbols);
-        #
-        # Obtain the historical data for each company
-        #
-        result <- lapply(1:size, function(i) {
-            symbol <- toString(symbols$Symbol[i]);
-            hd <- getHistoricalData(symbol);
-            return(hd);
-        });
-        #
-        # Filter the ones that are available only
-        #
-        result <- result[lapply(result, is.null) == 0]
-        saveRDS(result, file = pathMarketFile)
-        return(result);
-    }
-}
-
-
-companies      <- downloadData("nasdaq")
-
-reccessionAnalysis <- function (company) {
-  #
-  # Let's set some assumptions
-  #
-  startDate <- "2007-06-01";
-  endDate   <- "2010-06-01";
-  #
-  # Get the data for each company, order it by date, and focus on the
-  # recession crirys in 2008
-  #
-  company_data <- company@data[order(company@data$Date), ];
-  df <- data.frame(company_data);
-  df <- subset(df, Date > startDate & Date < endDate);
-  #
-  # Order the data of stocks by date in ascending order (just in case)
-  #
-  n  <- nrow(df)
-  if (n < 3) return(NULL);
-  #
-  # Iterate backward and find the right maximum
-  #
-  rmax_idx_array    <- vector(mode="numeric", length=n)
-  rmax_idx_array[n] <- n;
-  for(i in (n-1):1) {
-    rmax_idx <- rmax_idx_array[i + 1];
-    rmax <- as.numeric(df[rmax_idx, ]$Open);
-    curr <- as.numeric(df[i, ]$Open);
-    if (rmax < curr) {
-      rmax_idx_array[i] <- i;
-    } else {
-      rmax_idx_array[i] <- rmax_idx;
-    }
-  }
-  #
-  # Iterate forward and look for the left max and local minima
-  #
-  lmax_idx <- 1;
-  lmin_idx <- 1;
-  preCrisisHigh   <- NULL;
-  crisisLow       <- NULL;
-  postCrisisHigh  <- NULL;
-  
-  for (i in 2:(n-1)) {
-    #
-    # Find the right index
-    #
-    rmax_idx <- rmax_idx_array[i + 1];
-    #
-    # Now compute the rest of the values
-    #
-    lmax <- as.numeric(df[lmax_idx, ]$Open);
-    lmin <- as.numeric(df[lmin_idx, ]$Open);
-    rmax <- as.numeric(df[lmin_idx, ]$Open);
-    curr <- as.numeric(df[i, ]$Open);
-    #
-    # We have reached, yet another local minima
-    #
-    if (curr < lmin) {
-      preCrisisHigh  <- df[lmax_idx,];
-      crisisLow      <- df[i, ]
-      postCrisisHigh <- df[rmax_idx,];
-      # difference <- curr / lmin * 100;
-    }
-    
-    if (curr < lmin) lmin_idx <- i;
-    if (curr > lmax) lmax_idx <- i;
-  }
-  
-  # print(preCrisisHigh);
-  # print(crisisLow);
-  # print(postCrisisHigh);
-  
-  result <- list (
-    symbol          = company@symbol,
-    
-    preCrisisDate   = preCrisisHigh$Date,
-    crisisDate      = crisisLow$Date,
-    postCrisisDate  = postCrisisHigh$Date,
-    
-    preCrisis       = as.numeric(preCrisisHigh$Open),
-    crisis          = as.numeric(crisisLow$Open),
-    postCrisis      = as.numeric(postCrisisHigh$Open),
-    
-    difference      = as.numeric(preCrisisHigh$Open) - as.numeric(crisisLow$Open),
-    relative        = (1 - as.numeric(crisisLow$Open) / as.numeric(preCrisisHigh$Open)) * 100,
-    recovery        = preCrisisHigh$Open <= postCrisisHigh$Open,
-    
-    latest          = as.numeric(company_data[nrow(company_data), ]$Open)
-    
-  );
-
-  printLog(paste(
-    company@symbol, 
-    "Relative: ", round(result$relative, 2), 
-    "Recovery: ", result$recovery, 
-    "postCrisis: ", result$postCrisis,
-    "latest: ", result$latest
-  ));
-  
+    result <- list (
+      symbol       = company@symbol,
+      #
+      # Filter the informations for the 2008 crisis
+      #
+      beforeDate   = toString(index(shapeU$maxBefore)),
+      crisisDate   = toString(index(shapeU$min)),
+      afterDate    = toString(index(shapeU$maxAfter)),
+      before       = as.numeric(shapeU$maxBefore[,1]),
+      crisis       = as.numeric(shapeU$min[,1]),
+      after        = as.numeric(shapeU$maxAfter[,1]),
+      #
+      # Filter the informations for the pandemic crisis
+      #
+      latestMaxDate = toString(index(shapeL$max)),
+      latestMinDate = toString(index(shapeL$min)),
+      latestMax     = as.numeric(shapeL$max[,1]),
+      latestMin     = as.numeric(shapeL$min[,1])
+    );
+  } 
   return(result);
 }
 
+recessionAnalysis <- function (companies) {
+  #
+  # Run the analysis for each company, and obtain the one that went through reccession
+  #
+  reccessionCompaniesList <- lapply(companies, reccessionAnalysisPerCompany);
+  reccessionCompaniesList <- reccessionCompaniesList[lapply(reccessionCompaniesList, is.null) == 0];
+  reccessionCompanies     <- reparseData(do.call(rbind, reccessionCompaniesList));
+  #
+  # Filter the ones that survived the crysis in 2008
+  #
+  resilientCompanies <- subset(reccessionCompanies, before < after);
+  #
+  # Filter the ones that are doing fine today
+  #
+  goodCompanies <- subset(resilientCompanies, after < latestMax);
+  #
+  # Print some statistics over the obtained data.
+  #
+  print(sprintf("%10d companies fit the pattern",              nrow(reccessionCompanies)));
+  print(sprintf("%10d companies were resilient to the crisis", nrow(resilientCompanies)));
+  print(sprintf("%10d companies are still doing fine",         nrow(goodCompanies)));
+  #
+  # Return the good companies
+  #
+  return(goodCompanies);
+}
+#
+# Order by the biggest relative drop in the observed L-shape
+#
+orderByLShape <- function (df) {
+  df$LShape <- (1 - df$latestMin / df$latestMax) * 100;
+  df <- df[order(-df$LShape), ]
+  return(df);
+}
+#
+# Order by the biggest relative drop in the observed U-shape
+#
+orderByUShape <- function (df) {
+  df$UShape <- (1 - df$crisis / df$after) * 100;
+  df <- df[order(-df$UShape), ]
+  return(df);
+}
 
 
-analysis_list  <- lapply(companies, reccessionAnalysis)
-analysis_filtered <- analysis_list[lapply(analysis_list, is.null) == 0]
-analysis_df <- do.call(rbind, analysis_filtered)
+companies <- downloadData("nasdaq")
+analysis  <- recessionAnalysis(companies);
 
-analysis_df_corrected <- data.frame(analysis_df)
-analysis_df_corrected$relative <- as.numeric(analysis_df_corrected$relative)
-analysis_df_corrected <- subset(analysis_df_corrected, recovery == TRUE);
-analysis_df_corrected <- analysis_df_corrected[order(-analysis_df_corrected$relative), ]
-
-
-# analysis_df_corrected <- head(analysis_df_corrected, 100)
-analysis_df_corrected$preCrisisDate <- as.Date(as.numeric(analysis_df_corrected$preCrisisDate))
-analysis_df_corrected$crisisDate <- as.Date(as.numeric(analysis_df_corrected$crisisDate))
-analysis_df_corrected$postCrisisDate <- as.Date(as.numeric(analysis_df_corrected$postCrisisDate))
-
-analysis_df_corrected$postCrisis <- as.numeric(analysis_df_corrected$postCrisis)
-analysis_df_corrected$latest <- as.numeric(analysis_df_corrected$latest)
-
-analysis_df_corrected # <- subset(analysis_df_corrected, postCrisis < latest);
-
-max(getHistoricalData("AAPL")@data$Open);
-
-# getHistoricalData("AAOI");
-# analyze(apple);
-
-
-# df$Date <- as.Date(df$Date, format="%Y-%m-%d")
-#subset(df, Date > "2014-12-03" & Date < "2014-12-05")
-# df$Date <= "2018-03-20"
-# plotHistoricalData(apple)
-
-
-
-
-
-
-
-
-
-
+orderByLShape(analysis);
 
 
