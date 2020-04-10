@@ -26,6 +26,47 @@ setwd(file.path(path.expand("~"), "workspace", "stocks"));
 source(file.path(getwd(), "src", "historical.R"));
 source(file.path(getwd(), "src", "analysis.R"));
 source(file.path(getwd(), "src", "utils.R"));
+
+stockFitness <- function (company_data, startDate, endDate) {
+  #
+  # Filter the data in the given time-range
+  #
+  index  <- index(company_data);
+  stocks <- company_data[startDate < index & index < endDate];
+  #
+  # Calculate the moving average every 4 weeks:
+  # https://en.wikipedia.org/wiki/Moving_average
+  #
+  stocks <- rollmean(stocks, 28)
+  length <- nrow(stocks);
+  #
+  # Now procceed with calculation of a rudimentary MACD 
+  # algorithm (calculate the derivative after smoothing).
+  # https://en.wikipedia.org/wiki/MACD
+  #
+  if (length >= 2) {
+    d_prev <- stocks[1 : (length - 1), 1];
+    d_next <- stocks[2 : length, 1];
+    n_prev <- as.numeric(d_prev);
+    n_next <- as.numeric(d_next);
+    #
+    # Find the derivative
+    #
+    dt <- (d_prev - n_next) / n_prev;
+    dt <- as.numeric(dt);
+    #
+    # Consider only the negative values
+    #
+    result <- sum(dt[dt > 0]);
+  } else {
+    #
+    # There is not much we can do here
+    #
+    result <- .Machine$double.xmax;
+  } 
+  
+  return(result);
+}
 #
 # Perform per-company analysis
 #
@@ -38,29 +79,38 @@ reccessionAnalysisPerCompany <- function (company) {
   #
   shapeU <- detectUShape(company_data, "2007-06-01", "2010-06-01");
   shapeL <- detectLShape(company_data, "2020-01-01", "2020-04-01");
-
+  
   if (is.nonNull(shapeU) && is.nonNull(shapeL)) {
+    #
+    # Use heuristics to estimate stock fitness derived over the
+    # historical price data over the last 5 years.
+    #
+    stockFitness <- stockFitness(company_data, "2015-01-01","2020-01-01");
     #
     # If both shapes are detected, output the results
     #
     result <- list (
-      symbol       = company@symbol,
+      symbol       = as.character(company@symbol),
       #
       # Filter the informations for the 2008 crisis
       #
-      beforeDate   = toString(index(shapeU$maxBefore)),
-      crisisDate   = toString(index(shapeU$min)),
-      afterDate    = toString(index(shapeU$maxAfter)),
+      beforeDate   = as.character(index(shapeU$maxBefore)),
+      crisisDate   = as.character(index(shapeU$min)),
+      afterDate    = as.character(index(shapeU$maxAfter)),
       before       = as.numeric(shapeU$maxBefore[,1]),
       crisis       = as.numeric(shapeU$min[,1]),
       after        = as.numeric(shapeU$maxAfter[,1]),
       #
       # Filter the informations for the pandemic crisis
       #
-      latestMaxDate = toString(index(shapeL$max)),
-      latestMinDate = toString(index(shapeL$min)),
+      latestMaxDate = as.character(index(shapeL$max)),
+      latestMinDate = as.character(index(shapeL$min)),
       latestMax     = as.numeric(shapeL$max[,1]),
-      latestMin     = as.numeric(shapeL$min[,1])
+      latestMin     = as.numeric(shapeL$min[,1]),
+      #
+      # A heuristic number that indicates the fitness of the stock
+      #
+      stockFitness  = stockFitness
     );
   } 
   return(result);
@@ -97,7 +147,7 @@ recessionAnalysis <- function (companies) {
 #
 orderByLShape <- function (df) {
   df$LShape <- (1 - df$latestMin / df$latestMax) * 100;
-  df <- df[order(-df$LShape), ]
+  df <- df[order(-df$LShape), ];
   return(df);
 }
 #
@@ -105,14 +155,19 @@ orderByLShape <- function (df) {
 #
 orderByUShape <- function (df) {
   df$UShape <- (1 - df$crisis / df$after) * 100;
-  df <- df[order(-df$UShape), ]
+  df <- df[order(-df$UShape), ];
   return(df);
 }
 
+orderByFitness <- function (df) {
+  df <- df[order(df$stockFitness), ];
+  return(df);
+}
 
 companies <- downloadData("nasdaq")
 analysis  <- recessionAnalysis(companies);
+analysis  <- orderByLShape(analysis);
+analysis  <- orderByFitness(analysis);
+analysis
 
-orderByLShape(analysis);
-
-
+write.table(analysis, file = "data.csv", sep = ", ", col.names = FALSE)
